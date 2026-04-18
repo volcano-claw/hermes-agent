@@ -2213,6 +2213,21 @@ class TelegramAdapter(BasePlatformAdapter):
                         return True
         return False
 
+    def _first_bot_mention_is_self(self, message: Message) -> Optional[bool]:
+        if not self._bot:
+            return None
+
+        bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
+
+        for source_text in (getattr(message, "text", None), getattr(message, "caption", None)):
+            if not source_text:
+                continue
+            for match in re.finditer(r"@([a-zA-Z0-9_]{5,})", source_text):
+                mention = match.group(1).lower()
+                if mention.endswith("bot"):
+                    return mention == bot_username
+        return None
+
     def _message_matches_mention_patterns(self, message: Message) -> bool:
         if not self._mention_patterns:
             return False
@@ -2253,6 +2268,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
         if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
             return True
+        first_bot_mention_is_self = self._first_bot_mention_is_self(message)
+        if first_bot_mention_is_self is False:
+            return False
         if self._message_mentions_other_bot(message) and not self._message_mentions_bot(message):
             return False
         if not self._telegram_require_mention():
