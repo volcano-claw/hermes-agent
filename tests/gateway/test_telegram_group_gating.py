@@ -85,6 +85,29 @@ def test_group_messages_ignore_other_bot_mentions_even_when_open():
     ) is True
 
 
+def test_group_messages_first_mentioned_bot_owns_the_thread():
+    adapter = _make_adapter(require_mention=False)
+
+    assert adapter._should_process_message(
+        _group_message(
+            "hi @openclaw_bot then @hermes_bot",
+            entities=[
+                SimpleNamespace(type="mention", offset=3, length=len("@openclaw_bot")),
+                SimpleNamespace(type="mention", offset=22, length=len("@hermes_bot")),
+            ],
+        )
+    ) is False
+    assert adapter._should_process_message(
+        _group_message(
+            "hi @hermes_bot then @openclaw_bot",
+            entities=[
+                SimpleNamespace(type="mention", offset=3, length=len("@hermes_bot")),
+                SimpleNamespace(type="mention", offset=20, length=len("@openclaw_bot")),
+            ],
+        )
+    ) is True
+
+
 def test_group_messages_can_require_direct_trigger_via_config():
     adapter = _make_adapter(require_mention=True)
 
