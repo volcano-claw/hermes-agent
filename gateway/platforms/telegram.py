@@ -2180,6 +2180,39 @@ class TelegramAdapter(BasePlatformAdapter):
                         return True
         return False
 
+    def _message_mentions_other_bot(self, message: Message) -> bool:
+        if not self._bot:
+            return False
+
+        bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
+        bot_id = getattr(self._bot, "id", None)
+
+        def _iter_sources():
+            yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
+            yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
+
+        for source_text, entities in _iter_sources():
+            lower_text = source_text.lower()
+            for raw_mention in re.findall(r"@([a-zA-Z0-9_]{5,})", lower_text):
+                mention = raw_mention.lower()
+                if mention != bot_username and mention.endswith("bot"):
+                    return True
+            for entity in entities:
+                entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
+                if entity_type == "mention":
+                    offset = int(getattr(entity, "offset", -1))
+                    length = int(getattr(entity, "length", 0))
+                    if offset < 0 or length <= 0:
+                        continue
+                    mention_text = source_text[offset:offset + length].strip().lower().lstrip("@")
+                    if mention_text and mention_text != bot_username and mention_text.endswith("bot"):
+                        return True
+                elif entity_type == "text_mention":
+                    user = getattr(entity, "user", None)
+                    if user and getattr(user, "id", None) != bot_id and bool(getattr(user, "is_bot", False)):
+                        return True
+        return False
+
     def _message_matches_mention_patterns(self, message: Message) -> bool:
         if not self._mention_patterns:
             return False
@@ -2220,6 +2253,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
         if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
             return True
+        if self._message_mentions_other_bot(message) and not self._message_mentions_bot(message):
+            return False
         if not self._telegram_require_mention():
             return True
         if is_command:
