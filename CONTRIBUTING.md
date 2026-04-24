@@ -109,6 +109,23 @@ hermes chat -q "Hello"
 pytest tests/ -v
 ```
 
+### Customized fork workflow
+
+If you are working in a customized fork of Hermes Agent rather than the public upstream, do **not** merge upstream changes directly into the live branch.
+
+Before any upstream sync, follow the dedicated fork protocol in:
+
+- [`website/docs/developer-guide/fork-safe-updates.md`](website/docs/developer-guide/fork-safe-updates.md)
+
+This is especially important when the fork carries product-specific behavior such as:
+
+- Telegram routing or mention semantics
+- companion-app / mobile integration surfaces
+- OpenClaw-specific interoperability
+- deployment or governance guardrails
+
+For customized forks, upstream syncs must preserve local intent, not just pass Git.
+
 ---
 
 ## Project Structure
