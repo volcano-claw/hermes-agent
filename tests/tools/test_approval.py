@@ -11,6 +11,7 @@ from tools.approval import (
     _smart_approve,
     approve_session,
     detect_dangerous_command,
+    detect_hardline_command,
     is_approved,
     load_permanent,
     prompt_dangerous_approval,
@@ -125,6 +126,24 @@ class TestSafeCommand:
         assert is_dangerous is False
         assert key is None
         assert desc is None
+
+
+class TestSelfContainerLifecycleProtection:
+    def test_docker_restart_hermes_is_hardline_blocked(self):
+        is_hardline, desc = detect_hardline_command("docker restart hermes")
+        assert is_hardline is True
+        assert "hermes" in desc.lower()
+
+    def test_docker_compose_recreate_hermes_is_hardline_blocked(self):
+        is_hardline, desc = detect_hardline_command(
+            "docker compose -p app up -d --no-deps --force-recreate hermes"
+        )
+        assert is_hardline is True
+        assert "hermes" in desc.lower()
+
+    def test_docker_cp_to_hermes_is_not_blocked(self):
+        assert detect_hardline_command("docker cp /tmp/x hermes:/tmp/x") == (False, None)
+        assert detect_dangerous_command("docker cp /tmp/x hermes:/tmp/x") == (False, None, None)
 
 
 def _clear_session(key):

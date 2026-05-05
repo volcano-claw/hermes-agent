@@ -163,6 +163,14 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    # Self-container lifecycle actions. In Docker deployments where Hermes runs
+    # in a container named `hermes`, these commands SIGTERM the active gateway
+    # and interrupt the current agent turn. They are recoverable operationally
+    # but unrecoverable for the in-flight task, so the agent must not execute
+    # them on itself; run such restarts manually/outside the live turn instead.
+    (r'\bdocker\s+(?:container\s+)?(?:restart|stop|kill|rm)\b[^\n;|&]*\bhermes\b', "docker lifecycle action on live hermes container"),
+    (r'\bdocker\s+compose\b[^\n;|&]*\b(?:restart|stop|kill|rm)\b[^\n;|&]*\bhermes\b', "docker compose lifecycle action on live hermes service"),
+    (r'\bdocker(?:-compose)?\b[^\n;|&]*\bup\b[^\n;|&]*(?:--force-recreate|--build|--no-deps)[^\n;|&]*\bhermes\b', "docker compose recreate/build of live hermes service"),
 ]
 
 # Pre-compiled variant used by the hot-path matcher. Building these at module
@@ -247,6 +255,15 @@ DANGEROUS_PATTERNS = [
     # terminates all running agents mid-work.
     (r'\bhermes\s+gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
+    # Docker-level self-restart protection. In a Docker deployment where the
+    # active gateway container is named `hermes`, these commands send SIGTERM to
+    # the very process executing the current tool call, causing Telegram to show
+    # "Gateway shutting down — Your current task will be interrupted" and
+    # dropping the in-flight task. Keep this in dangerous-command detection so a
+    # human must move the restart outside the live agent turn.
+    (r'\bdocker\s+(?:container\s+)?(?:restart|stop|kill|rm)\b[^\n;|&]*\bhermes\b', "docker lifecycle action on live hermes container (interrupts current gateway task)"),
+    (r'\bdocker\s+compose\b[^\n;|&]*\b(?:restart|stop|kill|rm)\b[^\n;|&]*\bhermes\b', "docker compose lifecycle action on live hermes service (interrupts current gateway task)"),
+    (r'\bdocker(?:-compose)?\b[^\n;|&]*\bup\b[^\n;|&]*(?:--force-recreate|--build|--no-deps)[^\n;|&]*\bhermes\b', "docker compose recreate/build of live hermes service (interrupts current gateway task)"),
     # Gateway protection: never start gateway outside systemd management
     (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
