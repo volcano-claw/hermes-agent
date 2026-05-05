@@ -59,6 +59,195 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_dispatch_rejects_non_object_request():
+    resp = server.dispatch([])
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": None,
+        "error": {"code": -32600, "message": "invalid request: expected an object"},
+    }
+
+
+def test_dispatch_rejects_non_object_params():
+    resp = server.dispatch(
+        {"id": "1", "method": "session.create", "params": []}
+    )
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "error": {"code": -32602, "message": "invalid params: expected an object"},
+    }
+
+
+def test_voice_toggle_returns_configured_record_key(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"voice": {"record_key": "ctrl+o"}},
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.voice_mode",
+        types.SimpleNamespace(
+            check_voice_requirements=lambda: {"available": True, "details": ""}
+        ),
+    )
+    # ``voice.toggle`` action=on mutates ``os.environ["HERMES_VOICE"]``
+    # directly (CLI parity, runtime-only flag). Take monkeypatch
+    # ownership of the var so the change is reverted at teardown and
+    # later tests don't inherit a stale ON state (Copilot round-5
+    # review on #19835).
+    monkeypatch.setenv("HERMES_VOICE", "0")
+
+    on_resp = server.dispatch(
+        {"id": "voice-on", "method": "voice.toggle", "params": {"action": "on"}}
+    )
+    status_resp = server.dispatch(
+        {"id": "voice-status", "method": "voice.toggle", "params": {"action": "status"}}
+    )
+
+    assert on_resp["result"]["record_key"] == "ctrl+o"
+    assert status_resp["result"]["record_key"] == "ctrl+o"
+
+
+def test_voice_toggle_handles_non_dict_voice_cfg(monkeypatch):
+    """Round-3 Copilot review regression on #19835.
+
+    ``_load_cfg()`` is raw ``yaml.safe_load()`` output — a hand-edited
+    ``voice: true`` / ``voice: cmd+b`` / ``voice: null`` leaves ``voice``
+    as a bool/str/None, not a dict. Previously ``.get("record_key")``
+    on a non-dict broke every ``voice.toggle`` branch. Now it falls
+    back to the documented default.
+    """
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.voice_mode",
+        types.SimpleNamespace(
+            check_voice_requirements=lambda: {"available": True, "details": ""}
+        ),
+    )
+
+    for bad in (True, "cmd+b", None, 42, ["ctrl+b"]):
+        monkeypatch.setattr(server, "_load_cfg", lambda b=bad: {"voice": b})
+
+        status_resp = server.dispatch(
+            {"id": "voice-status", "method": "voice.toggle", "params": {"action": "status"}}
+        )
+
+        assert status_resp["result"]["record_key"] == "ctrl+b", (
+            f"voice.record_key fell back to default for voice={bad!r}"
+        )
+
+    # Round-4 follow-up: the YAML root itself may be a non-dict. A
+    # hand-edit that collapses config.yaml to a scalar / list would
+    # otherwise crash ``.get("voice")`` before the inner isinstance
+    # guard gets a chance to run.
+    for bad_root in (True, None, [], "ctrl+b", 42):
+        monkeypatch.setattr(server, "_load_cfg", lambda r=bad_root: r)
+
+        status_resp = server.dispatch(
+            {"id": "voice-status-root", "method": "voice.toggle", "params": {"action": "status"}}
+        )
+
+        assert status_resp["result"]["record_key"] == "ctrl+b", (
+            f"voice.record_key fell back to default for root={bad_root!r}"
+        )
+
+
+def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
+    """Round-7 Copilot review regression on #19835.
+
+    The ``voice.record`` start path previously read
+    ``_load_cfg().get("voice", {}).get(...)`` without any shape checks.
+    When ``voice`` is a non-dict (bool/scalar/list) ``get`` raises
+    AttributeError and the handler returns 5025 instead of falling
+    back to the VAD defaults. Now it uses ``_voice_cfg_dict()`` and
+    non-numeric silence values are coerced to the documented defaults.
+    """
+    captured: dict = {}
+
+    def fake_start_continuous(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(start_continuous=fake_start_continuous, stop_continuous=lambda: None),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "1")
+
+    for bad in (True, "cmd+b", None, 42, ["ctrl+b"], {"silence_threshold": "loud"}):
+        captured.clear()
+        monkeypatch.setattr(server, "_load_cfg", lambda b=bad: {"voice": b})
+
+        resp = server.dispatch(
+            {"id": "voice-record", "method": "voice.record", "params": {"action": "start"}}
+        )
+
+        assert "result" in resp, f"voice.record raised for voice={bad!r}: {resp.get('error')}"
+        assert resp["result"]["status"] == "recording"
+        assert captured["silence_threshold"] == 200
+        assert captured["silence_duration"] == 3.0
+
+    # Round-12 Copilot review regression on #19835: ``bool`` is a subclass
+    # of ``int``, so the naive ``isinstance(threshold, (int, float))``
+    # guard would forward ``silence_threshold: true`` as ``1`` instead
+    # of falling back to the documented 200 default.
+    for bad_bool_cfg in (
+        {"silence_threshold": True, "silence_duration": False},
+        {"silence_threshold": False},
+        {"silence_duration": True},
+    ):
+        captured.clear()
+        monkeypatch.setattr(server, "_load_cfg", lambda c=bad_bool_cfg: {"voice": c})
+
+        resp = server.dispatch(
+            {"id": "voice-record-bool", "method": "voice.record", "params": {"action": "start"}}
+        )
+
+        assert "result" in resp, f"voice.record raised for bool cfg={bad_bool_cfg!r}"
+        assert captured["silence_threshold"] == 200, (
+            f"bool silence_threshold leaked through for {bad_bool_cfg!r}"
+        )
+        assert captured["silence_duration"] == 3.0, (
+            f"bool silence_duration leaked through for {bad_bool_cfg!r}"
+        )
+
+
+def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
+    """Round-2 Copilot review regression on #19835.
+
+    The ``tts`` branch used to omit ``record_key`` from its response, so a
+    TUI client would parse ``r.record_key ?? 'ctrl+b'`` and reset a
+    custom binding to the default on every TTS toggle. Every branch of
+    ``voice.toggle`` now carries the configured key so frontend state
+    stays authoritative.
+    """
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"voice": {"record_key": "ctrl+space"}},
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.voice_mode",
+        types.SimpleNamespace(
+            check_voice_requirements=lambda: {"available": True, "details": ""}
+        ),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.delenv("HERMES_VOICE_TTS", raising=False)
+
+    tts_resp = server.dispatch(
+        {"id": "voice-tts", "method": "voice.toggle", "params": {"action": "tts"}}
+    )
+
+    assert tts_resp["result"]["record_key"] == "ctrl+space"
+    assert tts_resp["result"]["tts"] is True
+
+
 def test_load_enabled_toolsets_prefers_tui_env(monkeypatch):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, terminal, ,memory")
 
@@ -115,7 +304,10 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     )
     monkeypatch.setattr(config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}})
 
-    assert server._load_enabled_toolsets() == ["memory"]
+    # Sorted: ["kanban", "memory"]. `kanban` is auto-recovered by
+    # _get_platform_tools because it's a non-configurable platform toolset
+    # whose tools live in hermes-cli's universe (see toolsets.py).
+    assert server._load_enabled_toolsets() == ["kanban", "memory"]
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
@@ -134,7 +326,7 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
 
     monkeypatch.setattr(config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}})
 
-    assert server._load_enabled_toolsets() == ["memory"]
+    assert server._load_enabled_toolsets() == ["kanban", "memory"]
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
 
@@ -978,6 +1170,21 @@ def test_config_busy_get_and_set(monkeypatch):
     )
     assert set_resp["result"]["value"] == "interrupt"
     assert ("display.busy_input_mode", "interrupt") in writes
+
+
+def test_config_set_yolo_process_scope_treats_false_like_env_as_disabled(monkeypatch):
+    monkeypatch.setenv("HERMES_YOLO_MODE", "false")
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "yolo"},
+        }
+    )
+
+    assert resp["result"]["value"] == "1"
+    assert os.environ.get("HERMES_YOLO_MODE") == "1"
 
 
 def test_config_get_statusbar_survives_non_dict_display(monkeypatch):
@@ -1896,6 +2103,55 @@ def test_input_detect_drop_attaches_image(monkeypatch):
     assert resp["result"]["matched"] is True
     assert resp["result"]["is_image"] is True
     assert resp["result"]["text"] == "[User attached image: cat.png]"
+
+
+def test_input_detect_drop_path_with_spaces(tmp_path):
+    """input.detect_drop correctly handles image paths containing spaces."""
+    # Create a minimal PNG file with a space in its name
+    img = tmp_path / "screenshot with spaces.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")  # valid PNG header
+
+    server._sessions["sid"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "2",
+            "method": "input.detect_drop",
+            "params": {"session_id": "sid", "text": str(img)},
+        }
+    )
+
+    assert resp["result"]["matched"] is True
+    assert resp["result"]["is_image"] is True
+    assert resp["result"]["path"] == str(img)
+    assert resp["result"]["text"] == f"[User attached image: {img.name}]"
+    # Verify attachment was recorded in the session
+    assert len(server._sessions["sid"]["attached_images"]) == 1
+    assert server._sessions["sid"]["attached_images"][0] == str(img)
+
+
+def test_input_detect_drop_path_with_spaces_and_remainder(tmp_path):
+    """input.detect_drop splits remainder when path contains spaces."""
+    img = tmp_path / "photo with space.jpg"
+    img.write_bytes(b"\xff\xd8\xff" + b"fakejpeg")  # minimal-ish JPEG header
+
+    server._sessions["sid"] = _session()
+
+    user_input = f"{img} describe this image"
+    resp = server.handle_request(
+        {
+            "id": "3",
+            "method": "input.detect_drop",
+            "params": {"session_id": "sid", "text": user_input},
+        }
+    )
+
+    assert resp["result"]["matched"] is True
+    assert resp["result"]["is_image"] is True
+    assert resp["result"]["path"] == str(img)
+    # Remainder becomes the text sent to the model
+    assert resp["result"]["text"] == "describe this image"
+    assert server._sessions["sid"]["attached_images"][0] == str(img)
 
 
 def test_rollback_restore_resolves_number_and_file_path():

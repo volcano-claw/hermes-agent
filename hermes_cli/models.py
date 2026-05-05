@@ -40,6 +40,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("anthropic/claude-sonnet-4.5",     ""),
     ("anthropic/claude-haiku-4.5",      ""),
     ("openrouter/elephant-alpha",       "free"),
+    ("openrouter/owl-alpha",            "free"),
     ("openai/gpt-5.5",                  ""),
     ("openai/gpt-5.4-mini",             ""),
     ("xiaomi/mimo-v2.5-pro",             ""),
@@ -773,7 +774,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (local desktop app with built-in model server)"),
-    ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, $5 free credit, no markup)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models — pro, omni, flash)"),
@@ -803,6 +803,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint — your Azure AI deployment)"),
+    ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway"),
 ]
 
 # Derived dicts — used throughout the codebase
@@ -1739,10 +1740,20 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
 
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
-    """Return True if the model is a Claude model eligible for Anthropic Fast Mode."""
+    """Return True if the model is a Claude model eligible for Anthropic Fast Mode.
+
+    Fast mode is currently supported on Claude Opus 4.6 only. Per Anthropic's
+    docs (https://platform.claude.com/docs/en/build-with-claude/fast-mode):
+    "Fast mode is currently supported on Opus 4.6 only. Sending speed: fast
+    with an unsupported model returns an error." Opus 4.7 explicitly rejects
+    the ``speed`` parameter with HTTP 400.
+    """
     raw = _strip_vendor_prefix(str(model_id or ""))
     base = raw.split(":")[0]
-    return base.startswith("claude-")
+    if not base.startswith("claude-"):
+        return False
+    # Only Opus 4.6 supports fast mode at present.
+    return "opus-4-6" in base or "opus-4.6" in base
 
 
 def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:
@@ -2895,6 +2906,19 @@ def fetch_api_models(
 _OLLAMA_CLOUD_CACHE_TTL = 3600  # 1 hour
 
 
+def _strip_ollama_cloud_suffix(model_id: str) -> str:
+    """Strip :cloud / -cloud suffixes that models.dev appends to Ollama Cloud IDs.
+
+    The live API uses clean IDs (e.g. 'kimi-k2.6') while models.dev sometimes
+    returns them as 'kimi-k2.6:cloud'. Normalising before the dedup merge
+    prevents duplicate entries in the merged model list.
+    """
+    for suffix in (":cloud", "-cloud"):
+        if model_id.endswith(suffix):
+            return model_id[: -len(suffix)]
+    return model_id
+
+
 def _ollama_cloud_cache_path() -> Path:
     """Return the path for the Ollama Cloud model cache."""
     from hermes_constants import get_hermes_home
@@ -2990,9 +3014,10 @@ def fetch_ollama_cloud_models(
                 seen.add(m)
                 merged.append(m)
         for m in mdev_models:
-            if m and m not in seen:
-                seen.add(m)
-                merged.append(m)
+            normalized = _strip_ollama_cloud_suffix(m)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                merged.append(normalized)
         if merged:
             _save_ollama_cloud_cache(merged)
             return merged
@@ -3086,7 +3111,7 @@ def validate_requested_model(
             "message": f"Model `{requested}` was not found in LM Studio's model listing.",
         }
 
-    if normalized == "custom":
+    if normalized == "custom" or normalized.startswith("custom:"):
         # Try probing with correct auth for the api_mode.
         if api_mode == "anthropic_messages":
             probe = probe_api_models(api_key, base_url, api_mode=api_mode)
@@ -3184,11 +3209,12 @@ def validate_requested_model(
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
             return {
-                "accepted": False,
-                "persist": False,
+                "accepted": True,
+                "persist": True,
                 "recognized": False,
                 "message": (
-                    f"Model `{requested}` was not found in the OpenAI Codex model listing."
+                    f"Note: `{requested}` was not found in the OpenAI Codex model listing. "
+                    "It may still work if your ChatGPT/Codex account has access to a newer or hidden model ID."
                     f"{suggestion_text}"
                 ),
             }
