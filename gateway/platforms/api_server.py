@@ -575,6 +575,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
         self._port: int = int(extra.get("port", os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))))
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        self._api_dbm_key: str = os.getenv("API_SERVER_DBM_KEY", "")
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -665,6 +666,13 @@ class APIServerAdapter(BasePlatformAdapter):
     # Auth helper
     # ------------------------------------------------------------------
 
+    def _request_scope(self, request: "web.Request") -> str:
+        try:
+            from security.scope_policy import effective_scope_for_request
+            return effective_scope_for_request(request.headers, full_key=self._api_key)
+        except Exception:
+            return "full"
+
     def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
         """
         Validate Bearer token from Authorization header.
@@ -681,6 +689,8 @@ class APIServerAdapter(BasePlatformAdapter):
             token = auth_header[7:].strip()
             if hmac.compare_digest(token, self._api_key):
                 return None  # Auth OK
+            if self._api_dbm_key and hmac.compare_digest(token, self._api_dbm_key):
+                return None  # DBM scoped auth OK
 
         return web.json_response(
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
@@ -705,6 +715,30 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("SessionDB unavailable for API server: %s", e)
         return self._session_db
 
+    def _attach_request_scope(self, session_id: str, request: "web.Request") -> str:
+        scope = self._request_scope(request)
+        db = self._ensure_session_db()
+        try:
+            db_path = getattr(db, "db_path", None) or getattr(db, "path", None) or "/opt/data/state.db"
+            from security.scope_policy import attach_session_scope
+            return attach_session_scope(db_path, session_id, scope, source="api_server")
+        except Exception:
+            return scope
+
+    async def _handle_scope_audit(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        if self._request_scope(request) != "full":
+            return web.json_response({"error":"out_of_scope","scope":"dbm","reason":"full_scope_required"}, status=403)
+        try:
+            from security.scope_policy import read_scope_audit
+            since = request.query.get("since", "")
+            limit = int(request.query.get("limit", "100"))
+            return web.json_response({"items": read_scope_audit(since=since, limit=limit)})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
     # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
@@ -717,6 +751,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        scope: str = "full",
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -759,6 +794,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_complete_callback=tool_complete_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
+            scope=scope,
         )
         return agent
 
@@ -962,6 +998,8 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id = _derive_chat_session_id(system_prompt, first_user)
             # history already set from request body above
 
+        scope = self._attach_request_scope(session_id, request)
+
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
@@ -1047,6 +1085,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
+                scope=scope,
             ))
 
             return await self._write_sse_chat_completion(
@@ -1061,6 +1100,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                scope=scope,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1849,6 +1889,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Reuse session from previous_response_id chain so the dashboard
         # groups the entire conversation under one session entry.
         session_id = stored_session_id or str(uuid.uuid4())
+        scope = self._attach_request_scope(session_id, request)
 
         stream = bool(body.get("stream", False))
         if stream:
@@ -1902,6 +1943,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
+                scope=scope,
             ))
 
             response_id = f"resp_{uuid.uuid4().hex[:28]}"
@@ -1930,6 +1972,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                scope=scope,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2326,6 +2369,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
+        scope: str = "full",
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2348,6 +2392,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
+                scope=scope or "full",
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -2517,6 +2562,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams_created[run_id] = created_at
 
         event_cb = self._make_run_event_callback(run_id, loop)
+        scope = self._attach_request_scope(session_id, request)
 
         # Also wire stream_delta_callback so message.delta events flow through.
         def _text_cb(delta: Optional[str]) -> None:
@@ -2548,6 +2594,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
+                    scope=scope,
                 )
                 self._active_run_agents[run_id] = agent
                 def _run_sync():
@@ -2780,6 +2827,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_get("/scope-audit", self._handle_scope_audit)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

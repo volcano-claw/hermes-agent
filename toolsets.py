@@ -193,6 +193,21 @@ TOOLSETS = {
         "includes": []
     },
 
+    "dbm-api": {
+        "description": "DirectBookingManager scoped REST tools and strict Hunter HTTPS fetch",
+        "tools": [
+            "dbm_prospects_search",
+            "dbm_prospects_update",
+            "dbm_prospects_insert",
+            "dbm_outreach_draft",
+            "dbm_outreach_send",
+            "dbm_outreach_mark_sent",
+            "dbm_outreach_inbox_list",
+            "http_fetch",
+        ],
+        "includes": []
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 
@@ -315,6 +330,10 @@ TOOLSETS = {
             "session_search",
             # Code execution + delegation
             "execute_code", "delegate_task",
+            # DBM scoped REST tools (filtered by ACL unless dbm/full scope allows)
+            "dbm_prospects_search", "dbm_prospects_update", "dbm_prospects_insert",
+            "dbm_outreach_draft", "dbm_outreach_send", "dbm_outreach_mark_sent",
+            "dbm_outreach_inbox_list", "http_fetch",
             # Cronjob management
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)

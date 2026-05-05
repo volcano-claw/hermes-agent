@@ -928,6 +928,16 @@ def _build_child_agent(
     if effective_role == "orchestrator" and "delegation" not in child_toolsets:
         child_toolsets.append("delegation")
 
+    # DBM-scoped API-server runs must be able to spawn a Hunter child that
+    # keeps the same ACL scope and sees the DBM REST toolset.  Without this,
+    # the parent may be allowed to call delegate_task while the child inherits
+    # only generic/default toolsets and therefore cannot see dbm_* tools.
+    parent_scope = getattr(parent_agent, "scope", "full") if parent_agent is not None else "full"
+    if parent_scope == "dbm":
+        for required_toolset in ("file", "dbm-api"):
+            if required_toolset not in child_toolsets:
+                child_toolsets.append(required_toolset)
+
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(
         goal,
@@ -1027,6 +1037,7 @@ def _build_child_agent(
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
     child = AIAgent(
+        scope=getattr(parent_agent, "scope", "full") if parent_agent is not None else "full",
         base_url=effective_base_url,
         api_key=effective_api_key,
         model=effective_model,

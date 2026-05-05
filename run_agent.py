@@ -947,6 +947,7 @@ class AIAgent:
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
+        scope: str = "full",
     ):
         """
         Initialize the AI Agent.
@@ -1022,6 +1023,7 @@ class AIAgent:
         self.skip_context_files = skip_context_files
         self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
+        self.scope = scope or "full"
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
@@ -1542,6 +1544,11 @@ class AIAgent:
             disabled_toolsets=disabled_toolsets,
             quiet_mode=self.quiet_mode,
         )
+        try:
+            from security.scope_policy import filter_tool_schemas_for_scope
+            self.tools = filter_tool_schemas_for_scope(self.tools, self.scope)
+        except Exception:
+            pass
         
         # Show tool configuration and store valid tool names for validation
         self.valid_tool_names = set()
@@ -9145,6 +9152,14 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
+        try:
+            from security.scope_policy import check_tool_call, set_current_scope, reset_current_scope
+            _allowed, _deny = check_tool_call(self.scope, function_name, function_args, session_id=self.session_id)
+            if not _allowed:
+                return json.dumps(_deny, ensure_ascii=False)
+        except ImportError:
+            pass
+
         # Check plugin hooks for a block directive before executing anything.
         block_message: Optional[str] = None
         try:
@@ -9212,13 +9227,23 @@ class AIAgent:
         elif function_name == "delegate_task":
             return self._dispatch_delegate_task(function_args)
         else:
-            return handle_function_call(
-                function_name, function_args, effective_task_id,
-                tool_call_id=tool_call_id,
-                session_id=self.session_id or "",
-                enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                skip_pre_tool_call_hook=True,
-            )
+            _scope_tokens = None
+            try:
+                from security.scope_policy import set_current_scope, reset_current_scope
+                _scope_tokens = set_current_scope(self.scope, self.session_id)
+            except Exception:
+                reset_current_scope = None
+            try:
+                return handle_function_call(
+                    function_name, function_args, effective_task_id,
+                    tool_call_id=tool_call_id,
+                    session_id=self.session_id or "",
+                    enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                    skip_pre_tool_call_hook=True,
+                )
+            finally:
+                if _scope_tokens and reset_current_scope:
+                    reset_current_scope(_scope_tokens)
 
     @staticmethod
     def _wrap_verbose(label: str, text: str, indent: str = "     ") -> str:
@@ -9836,13 +9861,23 @@ class AIAgent:
                     spinner.start()
                 _spinner_result = None
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
-                    )
+                    _scope_tokens = None
+                    try:
+                        from security.scope_policy import set_current_scope, reset_current_scope
+                        _scope_tokens = set_current_scope(self.scope, self.session_id)
+                    except Exception:
+                        reset_current_scope = None
+                    try:
+                        function_result = handle_function_call(
+                            function_name, function_args, effective_task_id,
+                            tool_call_id=tool_call.id,
+                            session_id=self.session_id or "",
+                            enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                            skip_pre_tool_call_hook=True,
+                        )
+                    finally:
+                        if _scope_tokens and reset_current_scope:
+                            reset_current_scope(_scope_tokens)
                     _spinner_result = function_result
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -9856,13 +9891,23 @@ class AIAgent:
                         self._vprint(f"  {cute_msg}")
             else:
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
-                    )
+                    _scope_tokens = None
+                    try:
+                        from security.scope_policy import set_current_scope, reset_current_scope
+                        _scope_tokens = set_current_scope(self.scope, self.session_id)
+                    except Exception:
+                        reset_current_scope = None
+                    try:
+                        function_result = handle_function_call(
+                            function_name, function_args, effective_task_id,
+                            tool_call_id=tool_call.id,
+                            session_id=self.session_id or "",
+                            enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                            skip_pre_tool_call_hook=True,
+                        )
+                    finally:
+                        if _scope_tokens and reset_current_scope:
+                            reset_current_scope(_scope_tokens)
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)

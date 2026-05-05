@@ -670,6 +670,16 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
 
     try:
+        try:
+            from security.scope_policy import check_tool_call, current_scope, current_session_id
+            _scope = current_scope()
+            _sid = session_id or current_session_id()
+            _allowed, _deny = check_tool_call(_scope, function_name, function_args, session_id=_sid)
+            if not _allowed:
+                return json.dumps(_deny, ensure_ascii=False)
+        except ImportError:
+            pass
+
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
