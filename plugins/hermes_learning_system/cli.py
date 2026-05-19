@@ -9,6 +9,7 @@ from typing import Sequence
 from hermes_constants import get_hermes_home
 
 from .engine import LearningEngine, Observation
+from .eval import built_in_eval_suite, run_eval_suite
 
 
 def default_root() -> Path:
@@ -36,6 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
     promote = sub.add_parser("promote", help="Promote repeated high-confidence project instincts")
     promote.add_argument("--min-projects", type=int, default=2)
     promote.add_argument("--min-average-confidence", type=float, default=0.8)
+
+    sub.add_parser("eval", help="Run the built-in offline HLS evaluation probes")
     return parser
 
 
@@ -67,6 +70,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             min_average_confidence=args.min_average_confidence,
         )
         print(json.dumps([item.to_json() for item in promoted], ensure_ascii=False, sort_keys=True))
+        return 0
+
+    if args.command == "eval":
+        report = run_eval_suite(built_in_eval_suite(), root=args.root)
+        print(json.dumps(report.to_json(), ensure_ascii=False, sort_keys=True))
         return 0
 
     parser.error(f"unknown command: {args.command}")

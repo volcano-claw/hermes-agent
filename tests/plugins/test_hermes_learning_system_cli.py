@@ -33,3 +33,17 @@ def test_cli_ingest_status_and_promote(tmp_path: Path, capsys) -> None:
     status = json.loads(capsys.readouterr().out)
     assert status["global_instincts"] == 1
     assert "learn-capabilities-as-transferable-domains" in status["global_ids"]
+
+
+def test_cli_eval_runs_builtin_suite(tmp_path: Path, capsys) -> None:
+    exit_code = main(["--root", str(tmp_path), "eval"])
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["passed"] is True
+    assert report["score"] == 1.0
+    assert {result["id"] for result in report["results"]} == {
+        "transferable-learning",
+        "privacy-boundary",
+        "project-specific-workflow",
+    }

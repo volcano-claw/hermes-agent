@@ -68,6 +68,12 @@ Show status without raw observation text:
 PYTHONPATH=. python -m plugins.hermes_learning_system.cli status
 ```
 
+Run built-in offline eval probes:
+
+```bash
+PYTHONPATH=. python -m plugins.hermes_learning_system.cli eval
+```
+
 Promote repeated project instincts:
 
 ```bash
@@ -85,7 +91,8 @@ Included now:
 - global/project scoping;
 - confidence updates;
 - cross-project promotion;
-- CLI status/ingest/promote;
+- CLI status/ingest/promote/eval;
+- deterministic eval fixtures for scope, confidence, and privacy leakage;
 - tests and smoke command.
 
 Not included yet:
@@ -111,5 +118,6 @@ Those should be later slices after the primitive is stable.
 ```bash
 PYTHONPATH=. python -m pytest \
   tests/plugins/test_hermes_learning_system.py \
-  tests/plugins/test_hermes_learning_system_cli.py -q
+  tests/plugins/test_hermes_learning_system_cli.py \
+  tests/plugins/test_hermes_learning_system_eval.py -q
 ```
