@@ -1,0 +1,6 @@
+name: hermes-learning-system
+description: Generic offline-first learning primitives for observations, scoped instincts, confidence, and promotion.
+version: 0.1.0
+category: learning
+entrypoint: plugins.hermes_learning_system
+private_data_policy: generic-code-only
