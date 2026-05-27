@@ -46,8 +46,9 @@ _HERMES_CORE_TOOLS = [
     "browser_vision", "browser_console", "browser_cdp",
     # Text-to-speech
     "text_to_speech",
-    # Planning & memory
+    # Planning, memory, and learning
     "todo", "memory",
+    "hls_ingest", "hls_status", "hls_promote", "hls_eval",
     # Session history search
     "session_search",
     # Clarifying questions
@@ -165,6 +166,16 @@ TOOLSETS = {
     "memory": {
         "description": "Persistent memory across sessions (personal notes + user profile)",
         "tools": ["memory"],
+        "includes": []
+    },
+
+    "hermes_learning": {
+        "description": (
+            "Hermes Learning System: ingest observations/corrections into scoped instincts, "
+            "inspect status without raw observation leakage, promote repeated project lessons, "
+            "and run offline learning eval probes."
+        ),
+        "tools": ["hls_ingest", "hls_status", "hls_promote", "hls_eval"],
         "includes": []
     },
     
